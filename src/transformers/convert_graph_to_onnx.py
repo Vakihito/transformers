@@ -20,9 +20,9 @@ from typing import Dict, List, Optional, Tuple
 
 from packaging.version import Version, parse
 
+from transformers.file_utils import ModelOutput, is_tf_available, is_torch_available
 from transformers.pipelines import Pipeline, pipeline
 from transformers.tokenization_utils import BatchEncoding
-from transformers.utils import ModelOutput, is_tf_available, is_torch_available
 
 
 # This is the minimal required version to
@@ -120,7 +120,7 @@ def check_onnxruntime_requirements(minimum_version: Version):
             raise ImportError(
                 f"We found an older version of onnxruntime ({onnxruntime.__version__}) "
                 f"but we require onnxruntime to be >= {minimum_version} to enable all the conversions options.\n"
-                "Please update onnxruntime by running `pip install --upgrade onnxruntime`"
+                f"Please update onnxruntime by running `pip install --upgrade onnxruntime`"
             )
 
     except ImportError:
@@ -273,8 +273,6 @@ def convert_pytorch(nlp: Pipeline, opset: int, output: Path, use_external_format
     import torch
     from torch.onnx import export
 
-    from .pytorch_utils import is_torch_less_than_1_11
-
     print(f"Using framework PyTorch: {torch.__version__}")
 
     with torch.no_grad():
@@ -283,7 +281,7 @@ def convert_pytorch(nlp: Pipeline, opset: int, output: Path, use_external_format
 
         # PyTorch deprecated the `enable_onnx_checker` and `use_external_data_format` arguments in v1.11,
         # so we check the torch version for backwards compatibility
-        if is_torch_less_than_1_11:
+        if parse(torch.__version__) <= parse("1.10.99"):
             export(
                 nlp.model,
                 model_args,
@@ -378,8 +376,7 @@ def convert(
 
     """
     warnings.warn(
-        "The `transformers.convert_graph_to_onnx` package is deprecated and will be removed in version 5 of"
-        " Transformers",
+        "The `transformers.convert_graph_to_onnx` package is deprecated and will be removed in version 5 of Transformers",
         FutureWarning,
     )
     print(f"ONNX opset version set to: {opset}")
@@ -417,7 +414,8 @@ def optimize(onnx_model_path: Path) -> Path:
     opt_model_path = generate_identified_filename(onnx_model_path, "-optimized")
     sess_option = SessionOptions()
     sess_option.optimized_model_filepath = opt_model_path.as_posix()
-    _ = InferenceSession(onnx_model_path.as_posix(), sess_option)
+    providers = ["CUDAExecutionProvider"]
+    _ = InferenceSession(onnx_model_path.as_posix(), sess_option, providers=providers)
 
     print(f"Optimized model has been written at {opt_model_path}: \N{heavy check mark}")
     print("/!\\ Optimized model contains hardware specific operators which might not be portable. /!\\")
@@ -435,48 +433,29 @@ def quantize(onnx_model_path: Path) -> Path:
     Returns: The Path generated for the quantized
     """
     import onnx
-    from onnx.onnx_pb import ModelProto
-    from onnxruntime.quantization import QuantizationMode
-    from onnxruntime.quantization.onnx_quantizer import ONNXQuantizer
-    from onnxruntime.quantization.registry import IntegerOpsRegistry
+    from onnxruntime.quantization import QuantizationMode, quantize
 
-    # Load the ONNX model
     onnx_model = onnx.load(onnx_model_path.as_posix())
 
-    if parse(onnx.__version__) < parse("1.5.0"):
-        print(
-            "Models larger than 2GB will fail to quantize due to protobuf constraint.\n"
-            "Please upgrade to onnxruntime >= 1.5.0."
-        )
-
-    # Copy it
-    copy_model = ModelProto()
-    copy_model.CopyFrom(onnx_model)
-
-    # Construct quantizer
-    quantizer = ONNXQuantizer(
-        model=copy_model,
-        per_channel=False,
-        reduce_range=False,
-        mode=QuantizationMode.IntegerOps,
-        static=False,
-        weight_qType=True,
-        input_qType=False,
-        tensors_range=None,
-        nodes_to_quantize=None,
-        nodes_to_exclude=None,
-        op_types_to_quantize=list(IntegerOpsRegistry),
+    # Discussed with @yufenglee from ONNX runtime, this will be address in the next release of onnxruntime
+    print(
+        "As of onnxruntime 1.4.0, models larger than 2GB will fail to quantize due to protobuf constraint.\n"
+        "This limitation will be removed in the next release of onnxruntime."
     )
 
-    # Quantize and export
-    quantizer.quantize_model()
+    quantized_model = quantize(
+        model=onnx_model,
+        quantization_mode=QuantizationMode.IntegerOps,
+        force_fusions=True,
+        symmetric_weight=True,
+    )
 
     # Append "-quantized" at the end of the model's name
     quantized_model_path = generate_identified_filename(onnx_model_path, "-quantized")
 
     # Save model
     print(f"Quantized model has been written at {quantized_model_path}: \N{heavy check mark}")
-    onnx.save_model(quantizer.model.model, quantized_model_path.as_posix())
+    onnx.save_model(quantized_model, quantized_model_path.as_posix())
 
     return quantized_model_path
 
