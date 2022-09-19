@@ -397,7 +397,7 @@ def convert(
         convert_tensorflow(nlp, opset, output)
 
 
-def optimize(onnx_model_path: Path) -> Path:
+def optimize(onnx_model_path: Path, providers: list) -> Path:
     """
     Load the model at the specified path and let onnxruntime look at transformations on the graph to enable all the
     optimizations possible
@@ -414,7 +414,6 @@ def optimize(onnx_model_path: Path) -> Path:
     opt_model_path = generate_identified_filename(onnx_model_path, "-optimized")
     sess_option = SessionOptions()
     sess_option.optimized_model_filepath = opt_model_path.as_posix()
-    providers = ["CUDAExecutionProvider"]
     _ = InferenceSession(onnx_model_path.as_posix(), sess_option, providers=providers)
 
     print(f"Optimized model has been written at {opt_model_path}: \N{heavy check mark}")
